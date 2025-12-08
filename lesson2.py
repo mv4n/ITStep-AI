@@ -111,45 +111,45 @@
 
 
 
-import cv2
-import numpy as np
-# Практичне завдання 1
-# Відкрийте зображення data/Lenna.png. Виведіть на екран розмір зображення, тип даних,
-# максимальну та мінімальну інтенсивність пікселів,
-# саме зображення з підписом.
-img = cv2.imread(
-     'data/lesson1/Lenna.png',
-     cv2.IMREAD_GRAYSCALE
-)
-
-
-new_img = cv2.resize(img, (500, 500))
-
-print(type(new_img))
-print(new_img)
-print(new_img.shape)
-print(new_img.dtype)
-
-num_max = np.max(new_img)
-num_min = np.min(new_img)
-
-print(num_min)
-print(num_max)
-
-# Відкрийте зображення data/Lenna.png. Виведіть на екран такі зображень:
-# Верхній лівий кут розміром 300х150
-
-cut_img = new_img[0:300, 0:150]
-cv2.imshow('left apper', cut_img)
-
-# Центральний квадрат розміром 200х200
-center = new_img[150:350, 150:350]
-cv2.imshow('center', center)
-
-# Верхню половину
-half_up = new_img[0:250, :]
-cv2.imshow('half up', half_up)
-
-
-cv2.imshow('new', new_img)
-cv2.waitKey(0)
+# import cv2
+# import numpy as np
+# # Практичне завдання 1
+# # Відкрийте зображення data/Lenna.png. Виведіть на екран розмір зображення, тип даних,
+# # максимальну та мінімальну інтенсивність пікселів,
+# # саме зображення з підписом.
+# img = cv2.imread(
+#      'data/lesson1/Lenna.png',
+#      cv2.IMREAD_GRAYSCALE
+# )
+#
+#
+# new_img = cv2.resize(img, (500, 500))
+#
+# print(type(new_img))
+# print(new_img)
+# print(new_img.shape)
+# print(new_img.dtype)
+#
+# num_max = np.max(new_img)
+# num_min = np.min(new_img)
+#
+# print(num_min)
+# print(num_max)
+#
+# # Відкрийте зображення data/Lenna.png. Виведіть на екран такі зображень:
+# # Верхній лівий кут розміром 300х150
+#
+# cut_img = new_img[0:300, 0:150]
+# cv2.imshow('left apper', cut_img)
+#
+# # Центральний квадрат розміром 200х200
+# center = new_img[150:350, 150:350]
+# cv2.imshow('center', center)
+#
+# # Верхню половину
+# half_up = new_img[0:250, :]
+# cv2.imshow('half up', half_up)
+#
+#
+# cv2.imshow('new', new_img)
+# cv2.waitKey(0)
