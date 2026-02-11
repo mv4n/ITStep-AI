@@ -6,200 +6,178 @@ import win32com.client
 from langchain_google_genai import GoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 import os
-import dotenv
+from dotenv import load_dotenv
 
-# Клас порогів жестів
-class GestureThresholds:
+# Конфігурація для детекції жестів
+class DetectionSettings:
     def __init__(self):
-        # Допустимі відхилення по Z координаті
-        self.z_tolerance = 0.05
-        # Максимальний кут фаланг пальців
-        self.max_finger_angle = 20
-        # Пороги для великого пальця
-        self.thumb_left = 0.1
-        self.thumb_right = -0.1
-        self.thumb_up = 0.15
+        self.z_variance_limit = 0.055
+        self.finger_bend_limit = 18
+        self.thumb_left_limit = 0.11
+        self.thumb_right_limit = -0.11
+        self.thumb_vertical_limit = 0.16
 
-# Ініціалізація
-thresholds = GestureThresholds()
+config = DetectionSettings()
 
-# PowerPoint
-ppt_app = win32com.client.Dispatch("PowerPoint.Application")
-ppt_app.Visible = True
-presentation = ppt_app.Presentations.Open(r"C:\users\shapa\downloads\example.pptx")
-ppt_window = presentation.Windows(1)
+# З'єднання з PowerPoint
+pp_app = win32com.client.Dispatch("PowerPoint.Application")
+pp_app.Visible = True
+deck = pp_app.Presentations.Open(r"C:\users\shapa\downloads\example.pptx")
+deck_window = deck.Windows(1)
 
-def next_slide():
-    idx = ppt_window.View.Slide.SlideIndex
-    if idx < presentation.Slides.Count:
-        ppt_window.View.GotoSlide(idx + 1)
+def flip_forward():
+    slide_num = deck_window.View.Slide.SlideIndex
+    if slide_num < deck.Slides.Count:
+        deck_window.View.GotoSlide(slide_num + 1)
 
-def previous_slide():
-    idx = ppt_window.View.Slide.SlideIndex
-    if idx > 1:
-        ppt_window.View.GotoSlide(idx - 1)
+def flip_backward():
+    slide_num = deck_window.View.Slide.SlideIndex
+    if slide_num > 1:
+        deck_window.View.GotoSlide(slide_num - 1)
 
-# Допоміжні функції
-def calculate_angle(a, b, c):
-    vec1 = (b.x - a.x, b.y - a.y, b.z - a.z)
-    vec2 = (b.x - c.x, b.y - c.y, b.z - c.z)
-    dot = sum(vec1[i] * vec2[i] for i in range(3))
-    mag1 = math.sqrt(sum(x * x for x in vec1))
-    mag2 = math.sqrt(sum(x * x for x in vec2))
-    if mag1 * mag2 == 0:
+# Функція для розрахунку кута
+def get_angle_between_points(pt1, pt2, pt3):
+    dir1 = (pt2.x - pt1.x, pt2.y - pt1.y, pt2.z - pt1.z)
+    dir2 = (pt2.x - pt3.x, pt2.y - pt3.y, pt2.z - pt3.z)
+    scalar_prod = sum(x * y for x, y in zip(dir1, dir2))
+    len_dir1 = math.sqrt(sum(z**2 for z in dir1))
+    len_dir2 = math.sqrt(sum(z**2 for z in dir2))
+    if len_dir1 * len_dir2 == 0:
         return 180
-    return math.degrees(math.acos(dot / (mag1 * mag2)))
+    cos_angle = scalar_prod / (len_dir1 * len_dir2)
+    return math.degrees(math.acos(cos_angle))
 
-# Google Generative AI
-dotenv.load_dotenv()
-gemini_key = os.getenv("GEMINI_API_KEY")
+# Ініціалізація моделі ШІ
+load_dotenv()
+gemini_token = os.getenv("GEMINI_API_KEY")
+ai_generator = GoogleGenerativeAI(model="gemini-2.5-flash", api_key=gemini_token)
 
-ai_model = GoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    api_key=gemini_key
+content_prompt = PromptTemplate.from_template(
+    """Генеруй корисний контент для слайда на основі заголовка.
+Заголовок: {header}"""
 )
+content_flow = content_prompt | ai_generator
 
-prompt_template = PromptTemplate.from_template(
-    """
-    Ти допомагаєш створювати текст для слайдів. 
-    Заголовок слайда: {slide_heading}
-    """
-)
+# Налаштування для розпізнавання рук
+hand_mp = mp.solutions.hands
+draw_mp = mp.solutions.drawing_utils
+webcam = cv2.VideoCapture(0)
 
-ai_chain = prompt_template | ai_model
+detection_delay = 1.2
+detection_start = None
+content_creating = False
 
-# MediaPipe Hands
-mp_hands_module = mp.solutions.hands
-mp_drawer = mp.solutions.drawing_utils
-camera = cv2.VideoCapture(0)
-
-gesture_timer = None
-hold_duration = 1
-text_in_progress = None
-
-# Основний цикл
-with mp_hands_module.Hands(
-        static_image_mode=False,
-        max_num_hands=2,
-        model_complexity=1,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-) as hand_detector:
+with hand_mp.Hands(
+    static_image_mode=False,
+    max_num_hands=2,
+    model_complexity=1,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+) as detector:
 
     while True:
-        ret, frame_img = camera.read()
-        if not ret:
+        grabbed, img = webcam.read()
+        if not grabbed:
             break
 
-        rgb_frame = cv2.cvtColor(frame_img, cv2.COLOR_BGR2RGB)
-        hand_results = hand_detector.process(rgb_frame)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        detection_output = detector.process(img_rgb)
 
-        if hand_results.multi_hand_landmarks:
-            for lm, hand_info in zip(hand_results.multi_hand_landmarks, hand_results.multi_handedness):
-                mp_drawer.draw_landmarks(frame_img, lm, mp_hands_module.HAND_CONNECTIONS)
+        if detection_output.multi_hand_landmarks:
+            for marks, side_info in zip(detection_output.multi_hand_landmarks, detection_output.multi_handedness):
+                draw_mp.draw_landmarks(img, marks, hand_mp.HAND_CONNECTIONS)
+                hand_orientation = side_info.classification[0].label
+                if hand_orientation == "Right":
+                    continue
 
-                hand_type = hand_info.classification[0].label
-                if hand_type == "Right":
-                    continue  # Аналізуємо лише ліву руку
+                # Точки на руці
+                big_tip = marks.landmark[4]
+                big_base = marks.landmark[2]
+                ptr_tip = marks.landmark[8]
+                ptr_base = marks.landmark[5]
+                ptr_joint1 = marks.landmark[6]
+                ptr_joint2 = marks.landmark[7]
+                mid_tip = marks.landmark[12]
+                mid_base = marks.landmark[9]
+                mid_joint1 = marks.landmark[10]
+                mid_joint2 = marks.landmark[11]
+                rng_tip = marks.landmark[16]
+                rng_base = marks.landmark[13]
+                rng_joint1 = marks.landmark[14]
+                rng_joint2 = marks.landmark[15]
+                lit_tip = marks.landmark[20]
+                lit_base = marks.landmark[17]
+                lit_joint1 = marks.landmark[18]
+                lit_joint2 = marks.landmark[19]
 
-                #  Координати
-                thumb_tip = lm.landmark[4]
-                thumb_mcp = lm.landmark[2]
-
-                index_tip = lm.landmark[8]
-                index_mcp = lm.landmark[5]
-                index_pip = lm.landmark[6]
-                index_dip = lm.landmark[7]
-
-                middle_tip = lm.landmark[12]
-                middle_mcp = lm.landmark[9]
-                middle_pip = lm.landmark[10]
-                middle_dip = lm.landmark[11]
-
-                ring_tip = lm.landmark[16]
-                ring_mcp = lm.landmark[13]
-                ring_pip = lm.landmark[14]
-                ring_dip = lm.landmark[15]
-
-                pinky_tip = lm.landmark[20]
-                pinky_mcp = lm.landmark[17]
-                pinky_pip = lm.landmark[18]
-                pinky_dip = lm.landmark[19]
-
-                #  Жест
-                fingers_folded_left = (
-                    index_tip.y > index_mcp.y + 0.01 and
-                    middle_tip.y > middle_mcp.y + 0.01 and
-                    ring_tip.y > ring_mcp.y + 0.01 and
-                    pinky_tip.y > pinky_mcp.y + 0.01
+                # Логіка детекції
+                curled_left = (
+                    ptr_tip.y > ptr_base.y + 0.015 and
+                    mid_tip.y > mid_base.y + 0.015 and
+                    rng_tip.y > rng_base.y + 0.015 and
+                    lit_tip.y > lit_base.y + 0.015
+                )
+                curled_right = (
+                    ptr_tip.y < ptr_base.y - 0.015 and
+                    mid_tip.y < mid_base.y - 0.015 and
+                    rng_tip.y < rng_base.y - 0.015 and
+                    lit_tip.y < lit_base.y - 0.015
                 )
 
-                fingers_folded_right = (
-                    index_tip.y < index_mcp.y - 0.01 and
-                    middle_tip.y < middle_mcp.y - 0.01 and
-                    ring_tip.y < ring_mcp.y - 0.01 and
-                    pinky_tip.y < pinky_mcp.y - 0.01
+                mean_z = sum([big_tip.z, ptr_tip.z, mid_tip.z, rng_tip.z, lit_tip.z]) / 5
+                level_fingers = all(abs(mark.z - mean_z) < config.z_variance_limit
+                                    for mark in [big_tip, ptr_tip, mid_tip, rng_tip, lit_tip])
+
+                bends_ok = (
+                    get_angle_between_points(ptr_joint2, ptr_joint1, ptr_base) < config.finger_bend_limit and
+                    get_angle_between_points(mid_joint2, mid_joint1, mid_base) < config.finger_bend_limit and
+                    get_angle_between_points(rng_joint2, rng_joint1, rng_base) < config.finger_bend_limit and
+                    get_angle_between_points(lit_joint2, lit_joint1, lit_base) < config.finger_bend_limit
                 )
 
-                avg_z_pos = (index_tip.z + middle_tip.z + ring_tip.z + pinky_tip.z + thumb_tip.z) / 5
-                fingers_aligned = all(abs(l.z - avg_z_pos) < thresholds.z_tolerance for l in
-                                      [thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip])
+                big_left = big_tip.x - big_base.x > config.thumb_left_limit
+                big_right = big_tip.x - big_base.x < config.thumb_right_limit
+                big_side_l = big_tip.x > max(ptr_base.x, lit_base.x)
+                big_side_r = big_tip.x < min(ptr_base.x, lit_base.x)
+                big_upward = (big_tip.y - big_base.y) < config.thumb_vertical_limit
 
-                angles_ok = (
-                    calculate_angle(index_dip, index_pip, index_mcp) < thresholds.max_finger_angle and
-                    calculate_angle(middle_dip, middle_pip, middle_mcp) < thresholds.max_finger_angle and
-                    calculate_angle(ring_dip, ring_pip, ring_mcp) < thresholds.max_finger_angle and
-                    calculate_angle(pinky_dip, pinky_pip, pinky_mcp) < thresholds.max_finger_angle
-                )
+                swipe_l = curled_left and level_fingers and big_left and big_side_l and bends_ok
+                swipe_r = curled_right and level_fingers and big_right and big_side_r and bends_ok
+                big_up = big_upward and bends_ok
 
-                thumb_left_extended = thumb_tip.x - thumb_mcp.x > thresholds.thumb_left
-                thumb_right_extended = thumb_tip.x - thumb_mcp.x < thresholds.thumb_right
+                current_t = time.time()
 
-                thumb_side_left = thumb_tip.x > max(index_mcp.x, pinky_mcp.x)
-                thumb_side_right = thumb_tip.x < min(index_mcp.x, pinky_mcp.x)
-
-                thumb_up_gesture = (thumb_tip.y - thumb_mcp.y) < thresholds.thumb_up
-
-                gesture_left = fingers_folded_left and fingers_aligned and thumb_left_extended and thumb_side_left and angles_ok
-                gesture_right = fingers_folded_right and fingers_aligned and thumb_right_extended and thumb_side_right and angles_ok
-
-                current_time = time.time()
-
-                if gesture_left or gesture_right or (thumb_up_gesture and angles_ok):
-                    if text_in_progress:
-                        gesture_timer = None
+                if swipe_l or swipe_r or big_up:
+                    if content_creating:
+                        detection_start = None
                         continue
-
-                    if gesture_timer is None:
-                        gesture_timer = current_time
-                    elif (current_time - gesture_timer) >= hold_duration:
-                        if gesture_left:
-                            previous_slide()
-                            print("Left Slide Gesture")
-                        elif gesture_right:
-                            next_slide()
-                            print("Right Slide Gesture")
+                    if detection_start is None:
+                        detection_start = current_t
+                    elif current_t - detection_start >= detection_delay:
+                        if swipe_l:
+                            flip_backward()
+                            print("Свайп ліворуч — назад")
+                        elif swipe_r:
+                            flip_forward()
+                            print("Свайп праворуч — вперед")
                         else:
-                            current_slide = ppt_window.View.Slide
-                            slide_title = current_slide.Shapes.Title.TextFrame.TextRange.Text
-                            text_in_progress = True
-
-                            result_text = ai_chain.invoke({"slide_heading": slide_title})
-                            current_slide.Shapes.Placeholders(2).TextFrame.TextRange.Text = result_text
-
-                            text_in_progress = None
-                            presentation.Save()
-                            print("Thumb Up Gesture - Text Added")
-
-                        gesture_timer = None
+                            curr_slide = deck_window.View.Slide
+                            slide_head = curr_slide.Shapes.Title.TextFrame.TextRange.Text
+                            content_creating = True
+                            new_content = content_flow.invoke({"header": slide_head})
+                            curr_slide.Shapes.Placeholders(2).TextFrame.TextRange.Text = new_content
+                            content_creating = False
+                            deck.Save()
+                            print("Великий палець вгору — контент додано")
+                        detection_start = None
                 else:
-                    gesture_timer = None
+                    detection_start = None
 
-        cv2.imshow("Camera Feed", frame_img)
+        cv2.imshow("Потік з вебкамери", img)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-camera.release()
-presentation.Close()
-ppt_app.Quit()
+webcam.release()
+deck.Close()
+pp_app.Quit()
 cv2.destroyAllWindows()
