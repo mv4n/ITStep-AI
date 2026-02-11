@@ -126,7 +126,7 @@ with mp_hands_module.Hands(
                 pinky_pip = lm.landmark[18]
                 pinky_dip = lm.landmark[19]
 
-                #  Жести
+                #  Жест
                 fingers_folded_left = (
                     index_tip.y > index_mcp.y + 0.01 and
                     middle_tip.y > middle_mcp.y + 0.01 and
